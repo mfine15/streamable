@@ -67,6 +67,36 @@ processed = stream.map(lambda x: x * 2)
 processed.to_json('processed.json')
 ```
 
+#### Advanced JSON Features
+
+```python
+from streamable import Stream
+from pydantic import BaseModel
+
+# Define a Pydantic model for validation
+class Person(BaseModel):
+    name: str
+    age: int
+
+# Read from a JSONL file (JSON Lines format)
+stream = Stream.from_json('data.jsonl', jsonl=True)
+
+# Read from a directory of JSON files
+stream = Stream.from_json_dir('data_directory', recursive=True, pattern="*.json")
+
+# Read with schema validation
+stream = Stream.from_json('data.json', schema=Person)
+
+# Write in JSONL format
+stream.to_json('output.jsonl', jsonl=True)
+
+# Write chunked output
+stream.to_json('output_dir', chunk_size=100)
+
+# Write with max file size (creates multiple files if needed)
+stream.to_json('output_dir', jsonl=True, max_file_size=1024*1024)  # 1MB max size
+```
+
 ### CSV Operations
 
 You can create a stream from a CSV file or write a stream to a CSV file:

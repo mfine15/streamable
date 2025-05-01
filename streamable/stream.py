@@ -628,19 +628,135 @@ class Stream(Iterable[T]):
         return ProgressStream(self, total, **kwargs)
         
     @classmethod
-    def from_json(cls, file_path: str) -> "Stream":
+    def from_json(
+        cls,
+        file_path: str,
+        *,
+        jsonl: bool = False,
+        schema: Optional["Any"] = None,
+    ) -> "Stream":
         """
         Creates a stream from a JSON file.
         
         Args:
-            file_path (str): Path to the JSON file.
+            file_path (str): Path to the JSON file or directory.
+            jsonl (bool, optional): Whether the file is in JSONL format (JSON Lines). Default is False.
+            schema (Optional[Any], optional): Pydantic model to validate each item against. Default is None.
             
         Returns:
             Stream: A stream of elements from the JSON file.
         """
         def source():
-            with open(file_path, 'r') as f:
-                return json.load(f)
+            if os.path.isfile(file_path):
+                if jsonl:
+                    result = []
+                    with open(file_path, 'r') as f:
+                        for line in f:
+                            if line.strip():  # Skip empty lines
+                                item = json.loads(line)
+                                if schema is not None:
+                                    item = schema.parse_obj(item)
+                                result.append(item)
+                    return result
+                else:
+                    with open(file_path, 'r') as f:
+                        data = json.load(f)
+                        if schema is not None and isinstance(data, list):
+                            return [schema.parse_obj(item) for item in data]
+                        elif schema is not None:
+                            return schema.parse_obj(data)
+                        return data
+            elif os.path.isdir(file_path):
+                result = []
+                for root, _, files in os.walk(file_path):
+                    for file in files:
+                        if file.endswith('.json') or file.endswith('.jsonl'):
+                            file_is_jsonl = jsonl or file.endswith('.jsonl')
+                            file_full_path = os.path.join(root, file)
+                            if file_is_jsonl:
+                                with open(file_full_path, 'r') as f:
+                                    for line in f:
+                                        if line.strip():  # Skip empty lines
+                                            item = json.loads(line)
+                                            if schema is not None:
+                                                item = schema.parse_obj(item)
+                                            result.append(item)
+                            else:
+                                with open(file_full_path, 'r') as f:
+                                    data = json.load(f)
+                                    if isinstance(data, list):
+                                        if schema is not None:
+                                            data = [schema.parse_obj(item) for item in data]
+                                        result.extend(data)
+                                    else:
+                                        if schema is not None:
+                                            data = schema.parse_obj(data)
+                                        result.append(data)
+                return result
+            else:
+                # Return empty list if path doesn't exist
+                return []
+        return cls(source)
+    @classmethod
+    def from_json_dir(
+        cls,
+        dir_path: str,
+        *,
+        jsonl: bool = False,
+        schema: Optional["Any"] = None,
+        recursive: bool = True,
+        pattern: str = "*.json*",
+    ) -> "Stream":
+        """
+        Creates a stream from a directory of JSON files.
+        
+        Args:
+            dir_path (str): Path to the directory containing JSON files.
+            jsonl (bool, optional): Whether the files are in JSONL format (JSON Lines). Default is False.
+            schema (Optional[Any], optional): Pydantic model to validate each item against. Default is None.
+            recursive (bool, optional): Whether to search subdirectories recursively. Default is True.
+            pattern (str, optional): Glob pattern to match files. Default is "*.json*".
+            
+        Returns:
+            Stream: A stream of elements from the JSON files.
+        """
+        import glob
+        
+        def source():
+            if not os.path.isdir(dir_path):
+                raise NotADirectoryError(f"Path {dir_path} is not a directory")
+                
+            result = []
+            search_pattern = os.path.join(dir_path, "**", pattern) if recursive else os.path.join(dir_path, pattern)
+            file_paths = glob.glob(search_pattern, recursive=recursive)
+            
+            for file_path in file_paths:
+                file_is_jsonl = jsonl or file_path.endswith('.jsonl')
+                if file_is_jsonl:
+                    with open(file_path, 'r') as f:
+                        for line in f:
+                            if line.strip():  # Skip empty lines
+                                item = json.loads(line)
+                                if schema is not None:
+                                    item = schema.parse_obj(item)
+                                result.append(item)
+                else:
+                    with open(file_path, 'r') as f:
+                        try:
+                            data = json.load(f)
+                            if isinstance(data, list):
+                                if schema is not None:
+                                    data = [schema.parse_obj(item) for item in data]
+                                result.extend(data)
+                            else:
+                                if schema is not None:
+                                    data = schema.parse_obj(data)
+                                result.append(data)
+                        except json.JSONDecodeError:
+                            continue
+            
+            return result
+        
         return cls(source)
         
     @classmethod
@@ -661,21 +777,86 @@ class Stream(Iterable[T]):
                 return list(reader)
         return cls(source)
         
-    def to_json(self, file_path: str, **kwargs) -> "Stream[T]":
+    def to_json(
+        self,
+        file_path: str,
+        *,
+        jsonl: bool = False,
+        chunk_size: Optional[int] = None,
+        max_file_size: Optional[int] = None,
+        **kwargs
+    ) -> "Stream[T]":
         """
         Writes the stream elements to a JSON file and yields them unchanged.
         
         Args:
-            file_path (str): Path to the output JSON file.
-            **kwargs: Additional keyword arguments to pass to json.dump.
+            file_path (str): Path to the output JSON file or directory.
+            jsonl (bool, optional): Whether to write in JSONL format (JSON Lines). Default is False.
+            chunk_size (Optional[int], optional): Number of elements per chunk. Default is None.
+            max_file_size (Optional[int], optional): Maximum file size in bytes. Default is None.
+               If provided, output will be split into multiple files in the directory.
+            **kwargs: Additional keyword arguments to pass to json.dump or json.dumps.
             
         Returns:
             Stream[T]: The original stream, unchanged.
         """
         def effect(elements):
-            os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-            with open(file_path, 'w') as f:
-                json.dump(elements, f, **kwargs)
+            if not elements:
+                return
+                
+            if max_file_size is not None or os.path.isdir(file_path) or file_path.endswith('/'):
+                os.makedirs(file_path, exist_ok=True)
+                base_dir = file_path
+                
+                if jsonl:
+                    current_file_size = 0
+                    current_file_index = 0
+                    current_file = None
+                    
+                    for item in elements:
+                        if current_file is None or (max_file_size is not None and current_file_size >= max_file_size):
+                            if current_file is not None:
+                                current_file.close()
+                            current_file_path = os.path.join(base_dir, f"data_{current_file_index}.jsonl")
+                            current_file = open(current_file_path, 'w')
+                            current_file_size = 0
+                            current_file_index += 1
+                            
+                        json_line = json.dumps(item, **kwargs) + '\n'
+                        line_size = len(json_line.encode('utf-8'))
+                        
+                        if max_file_size is not None and current_file_size + line_size > max_file_size and current_file_size > 0:
+                            current_file.close()
+                            current_file_path = os.path.join(base_dir, f"data_{current_file_index}.jsonl")
+                            current_file = open(current_file_path, 'w')
+                            current_file_size = 0
+                            current_file_index += 1
+                            
+                        current_file.write(json_line)
+                        current_file_size += line_size
+                    
+                    if current_file is not None:
+                        current_file.close()
+                else:
+                    if chunk_size is not None:
+                        chunks = [elements[i:i + chunk_size] for i in range(0, len(elements), chunk_size)]
+                        for i, chunk in enumerate(chunks):
+                            chunk_file = os.path.join(base_dir, f"data_{i}.json")
+                            with open(chunk_file, 'w') as f:
+                                json.dump(chunk, f, **kwargs)
+                    else:
+                        with open(os.path.join(base_dir, "data.json"), 'w') as f:
+                            json.dump(elements, f, **kwargs)
+            else:
+                os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+                
+                if jsonl:
+                    with open(file_path, 'w') as f:
+                        for item in elements:
+                            f.write(json.dumps(item, **kwargs) + '\n')
+                else:
+                    with open(file_path, 'w') as f:
+                        json.dump(elements, f, **kwargs)
         
         return self.group().foreach(effect).flatten()
         

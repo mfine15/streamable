@@ -17,6 +17,7 @@ maintainers = [
 ]
 dependencies = [
     "tqdm>=4.65.0",
+    "pydantic>=1.10.0",
 ]
 
 [project.urls]
