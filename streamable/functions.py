@@ -227,3 +227,28 @@ def truncate(
     if when is not None:
         iterator = PredicateTruncateIterator(iterator, when)
     return iterator
+
+
+def progress(
+    iterator: Iterator[T],
+    total: Optional[int] = None,
+    **kwargs
+) -> Iterator[T]:
+    """
+    Wraps an iterator with a tqdm progress bar.
+    
+    Args:
+        iterator: The iterator to wrap with a progress bar.
+        total: The expected total number of elements. If None, the progress bar will not show a percentage.
+        **kwargs: Additional keyword arguments to pass to tqdm.
+        
+    Returns:
+        Iterator[T]: An iterator with a progress bar showing iteration progress.
+    """
+    validate_iterator(iterator)
+    try:
+        from tqdm import tqdm
+        tqdm_iter = tqdm(iterator, total=total, **kwargs)
+        return iter(tqdm_iter)
+    except ImportError:
+        return iterator

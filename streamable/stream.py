@@ -1,6 +1,9 @@
 import copy
+import csv
 import datetime
+import json
 import logging
+import os
 from contextlib import suppress
 from typing import (
     TYPE_CHECKING,
@@ -16,6 +19,7 @@ from typing import (
     Optional,
     Sequence,
     Set,
+    TextIO,
     Tuple,
     Type,
     TypeVar,
@@ -36,6 +40,12 @@ from streamable.util.validationtools import (
     validate_optional_positive_interval,
     validate_via,
 )
+
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover
+    def tqdm(iterable=None, **kwargs):
+        return iterable
 
 with suppress(ImportError):
     from typing import Literal
@@ -603,6 +613,96 @@ class Stream(Iterable[T]):
         """
         validate_optional_count(count)
         return TruncateStream(self, count, when)
+        
+    def progress(self, total: Optional[int] = None, **kwargs) -> "Stream[T]":
+        """
+        Wraps the stream with a tqdm progress bar.
+        
+        Args:
+            total (Optional[int], optional): The expected total number of elements. If None, the progress bar will not show a percentage.
+            **kwargs: Additional keyword arguments to pass to tqdm.
+            
+        Returns:
+            Stream[T]: A stream with a progress bar showing iteration progress.
+        """
+        return ProgressStream(self, total, **kwargs)
+        
+    @classmethod
+    def from_json(cls, file_path: str) -> "Stream":
+        """
+        Creates a stream from a JSON file.
+        
+        Args:
+            file_path (str): Path to the JSON file.
+            
+        Returns:
+            Stream: A stream of elements from the JSON file.
+        """
+        def source():
+            with open(file_path, 'r') as f:
+                return json.load(f)
+        return cls(source)
+        
+    @classmethod
+    def from_csv(cls, file_path: str, **kwargs) -> "Stream[Dict]":
+        """
+        Creates a stream from a CSV file.
+        
+        Args:
+            file_path (str): Path to the CSV file.
+            **kwargs: Additional keyword arguments to pass to csv.DictReader.
+            
+        Returns:
+            Stream[Dict]: A stream of dictionaries, each representing a row from the CSV file.
+        """
+        def source():
+            with open(file_path, 'r', newline='') as f:
+                reader = csv.DictReader(f, **kwargs)
+                return list(reader)
+        return cls(source)
+        
+    def to_json(self, file_path: str, **kwargs) -> "Stream[T]":
+        """
+        Writes the stream elements to a JSON file and yields them unchanged.
+        
+        Args:
+            file_path (str): Path to the output JSON file.
+            **kwargs: Additional keyword arguments to pass to json.dump.
+            
+        Returns:
+            Stream[T]: The original stream, unchanged.
+        """
+        def effect(elements):
+            os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+            with open(file_path, 'w') as f:
+                json.dump(elements, f, **kwargs)
+        
+        return self.group().foreach(effect).flatten()
+        
+    def to_csv(self, file_path: str, fieldnames: Optional[List[str]] = None, **kwargs) -> "Stream[T]":
+        """
+        Writes the stream elements to a CSV file and yields them unchanged.
+        
+        Args:
+            file_path (str): Path to the output CSV file.
+            fieldnames (Optional[List[str]], optional): List of field names for the CSV. If None, will use keys from the first element.
+            **kwargs: Additional keyword arguments to pass to csv.DictWriter.
+            
+        Returns:
+            Stream[T]: The original stream, unchanged.
+        """
+        def effect(elements):
+            if not elements:
+                return
+                
+            os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+            with open(file_path, 'w', newline='') as f:
+                fields = fieldnames or list(elements[0].keys())
+                writer = csv.DictWriter(f, fieldnames=fields, **kwargs)
+                writer.writeheader()
+                writer.writerows(elements)
+        
+        return self.group().foreach(effect).flatten()
 
 
 class DownStream(Stream[U], Generic[T, U]):
@@ -871,3 +971,20 @@ class TruncateStream(DownStream[T, T]):
 
     def accept(self, visitor: "Visitor[V]") -> V:
         return visitor.visit_truncate_stream(self)
+
+
+class ProgressStream(DownStream[T, T]):
+    __slots__ = ("_upstream", "_total", "_kwargs")
+
+    def __init__(
+        self,
+        upstream: Stream[T],
+        total: Optional[int] = None,
+        **kwargs
+    ) -> None:
+        super().__init__(upstream)
+        self._total = total
+        self._kwargs = kwargs
+
+    def accept(self, visitor: "Visitor[V]") -> V:
+        return visitor.visit_progress_stream(self)

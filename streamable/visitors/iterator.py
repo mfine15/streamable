@@ -13,6 +13,7 @@ from streamable.stream import (
     GroupStream,
     MapStream,
     ObserveStream,
+    ProgressStream,
     SkipStream,
     Stream,
     ThrottleStream,
@@ -139,6 +140,13 @@ class IteratorVisitor(Visitor[Iterator[T]]):
             stream.upstream.accept(self),
             stream._count,
             when=stream._when,
+        )
+        
+    def visit_progress_stream(self, stream: ProgressStream[T]) -> Iterator[T]:
+        return functions.progress(
+            stream.upstream.accept(self),
+            total=stream._total,
+            **stream._kwargs,
         )
 
     def visit_stream(self, stream: Stream[T]) -> Iterator[T]:
